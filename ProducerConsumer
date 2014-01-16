@@ -1,0 +1,146 @@
+/* The exclusion is two methods: put and take. 
+ * therefore, it is advisable to just use the instance as the monitor.
+ * 
+ * lock and synchronized(wait and notify cannot be mixed together)
+ * if want to use wait, must use condition.await();
+ * 
+ * 
+ * */
+public class ProducerConsumer {
+	static Random r = new Random();
+	/**
+	 * @param args
+	 */
+	public static void main(String[] args) {
+		// TODO Auto-generated method stub
+		Buffer buffer = new Buffer(5);
+		new Producer(buffer).start();
+		new Consumer(buffer).start();
+		new Consumer(buffer).start();
+	}
+	static class Buffer{
+		int max,count;
+		int[] data;
+		int start,end;
+		ReentrantLock lock;
+		Condition cond;
+		public Buffer(int max){
+			this.max = max;
+			count=0;
+			data=new int[max];
+			start=0;end=0;
+			lock = new ReentrantLock();
+			cond = lock.newCondition();
+		}
+		public  void put(int n){
+			try {
+				lock.lock();
+				while(count==max)
+					cond.await();
+				data[end++]=n;
+				end=end%max;
+				count++;
+				System.out.println("put "+n+" count = "+ count);
+				cond.signalAll();
+			} catch (InterruptedException e) {
+				// TODO Auto-generated catch block
+				e.printStackTrace();
+			}
+			finally{
+				//if(lock.isLocked())
+					lock.unlock();
+			}
+			//notify();
+		}
+		public int take(){
+			int ret=0;
+			try {
+				lock.lock();
+				while(count==0)
+					cond.await();
+				ret = data[start++];
+				start=start%max;
+				count--;
+				System.out.println("take "+ret+" count = "+ count);
+				cond.signalAll();
+			} catch (InterruptedException e) {
+				// TODO Auto-generated catch block
+				e.printStackTrace();
+			}
+			finally{
+				//if(lock.isLocked())
+					lock.unlock();
+			}
+			//notify();
+			return ret;
+		}
+//		public synchronized void put(int n){
+//			try {
+//				while(count==max)
+//					wait();
+//				data[end++]=n;
+//				end=end%max;
+//				count++;
+//				System.out.println("put "+n+" count = "+ count);
+//			} catch (InterruptedException e) {
+//				// TODO Auto-generated catch block
+//				e.printStackTrace();
+//			}
+//			notify();
+//		}
+//		public synchronized int take(){
+//			int ret=0;
+//			try {
+//				while(count==0)
+//					wait();
+//				ret = data[start++];
+//				start=start%max;
+//				count--;
+//				System.out.println("take "+ret+" count = "+ count);
+//			} catch (InterruptedException e) {
+//				// TODO Auto-generated catch block
+//				e.printStackTrace();
+//			}
+//			notify();
+//			return ret;
+//		}
+	}
+	static class Producer extends Thread{
+		
+		Buffer buffer ;
+		public Producer(Buffer buffer){
+			this.buffer = buffer;
+		}
+		@Override
+		public /*synchronized*/ void run(){
+			while(true){
+				try {
+					Thread.sleep(Math.abs(r.nextInt(700)));
+				} catch (InterruptedException e) {
+					// TODO Auto-generated catch block
+					e.printStackTrace();
+				}
+				int d = r.nextInt();
+				buffer.put(d);
+			}
+		}
+	}
+	static class Consumer extends Thread{
+		Buffer buffer;
+		public Consumer(Buffer buffer){
+			this.buffer = buffer;
+		}
+		@Override
+		public /*synchronized*/ void run(){
+			while(true){
+				try {
+					Thread.sleep(Math.abs(r.nextInt(1000)));
+				} catch (InterruptedException e) {
+					// TODO Auto-generated catch block
+					e.printStackTrace();
+				}
+				int d= buffer.take();
+			}			
+		}
+	}
+}
