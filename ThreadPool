@@ -1,0 +1,258 @@
+/*
+ * Copyright (c) 2013-2015 Oracle and/or its affiliates. All rights reserved.
+ */
+package test.groovy;
+
+import static org.junit.Assert.assertTrue;
+
+import java.util.HashSet;
+import java.util.LinkedList;
+import java.util.Random;
+import java.util.Set;
+import java.util.Timer;
+import java.util.TimerTask;
+import java.util.concurrent.Callable;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorCompletionService;
+import java.util.concurrent.Future;
+import java.util.function.Supplier;
+
+import oracle.idaas.oauthmigration.task.ClientMigrationCompletionTask;
+import oracle.idaas.oauthmigration.task.ClientProfileConversionTask;
+import oracle.idaas.oauthmigration.task.ClientProfileIDCSRegistrationTask;
+import oracle.idaas.oauthmigration.task.MigrationTask;
+import oracle.idaas.oauthmigration.task.QueryOAMClientProfileTask;
+import oracle.idaas.oauthmigration.utils.MigrationThreadPool;
+
+import org.junit.Before;
+import org.junit.Test;
+
+public class MultiThreadPoolTest {
+    private MigrationThreadPool pool;
+    private LinkedList<Callable<MigrationTask>> tasks;
+    private LinkedList<Future<?>> finishedTasks;
+    private int jobSize, successCount, failureCount;
+    private boolean timeUp;
+    private Boolean[] results;
+
+    @Before
+    public void prepareTest() {
+        pool = new MigrationThreadPool();
+        tasks = new LinkedList<Callable<MigrationTask>>();
+        finishedTasks = new LinkedList<Future<?>>();
+        successCount = 0;
+        failureCount = 0;
+        jobSize = 10;
+        timeUp = false;
+        results = new Boolean[jobSize];
+    }
+
+    /**
+     * Simple ThreadPool each thread is blocked for remote invokation
+     * */
+    @Test
+    public void jobSubmissionTest() {
+        System.out.println("unit test");
+        Timer timer = new Timer(true);
+        timer.schedule(new TimerTask() {
+            @Override
+            public void run() {
+                // TODO Auto-generated method stub
+                timeUp = true;
+            }
+        }, 300 * 1000);
+        for (int i = 0; i < jobSize; i++) {
+            QueryOAMClientProfileTask task = new QueryOAMClientProfileTask(i);
+            try {
+                finishedTasks.add(pool.addTask(task));
+            } catch (Exception e) {
+                // e.printStackTrace();
+                tasks.add(task);
+            }
+        }
+
+        while (!timeUp && (!tasks.isEmpty() || !finishedTasks.isEmpty())) {
+            try { // keeping add new tasks to the blocking queue
+                while (!tasks.isEmpty()) {
+                    finishedTasks.add(pool.addTask(tasks.peekFirst()));
+                    tasks.pollFirst();
+                }
+            } catch (Exception e) {
+                // e.printStackTrace();
+            }
+            try {
+                Thread.sleep(1000);
+            } catch (InterruptedException e1) {
+                // TODO Auto-generated catch block
+                e1.printStackTrace();
+            }
+            // System.out.println(finishedTasks);
+            while (!finishedTasks.isEmpty()
+                    && finishedTasks.peekFirst().isDone()) {
+                Future<?> future = finishedTasks.pollFirst();
+                try {
+                    Object result = future.get();
+                    if (result instanceof QueryOAMClientProfileTask) {
+                        tasks.add((QueryOAMClientProfileTask) result);
+                    }
+                    if (result instanceof ClientProfileConversionTask) {
+                        tasks.add((ClientProfileConversionTask) result);
+                    } else if (result instanceof ClientProfileIDCSRegistrationTask) {
+                        tasks.add((ClientProfileIDCSRegistrationTask) result);
+                    } else if (result instanceof ClientMigrationCompletionTask) {
+                        ClientMigrationCompletionTask task = (ClientMigrationCompletionTask) result;
+                        if (task.isFailed()) {
+                            this.failureCount++;
+                            System.out.println("task: " + task.getTask()
+                                    + " is failed!");
+                            results[task.getTask()] = false;
+                        } else {
+                            this.successCount++;
+                            System.out.println("task: " + task.getTask()
+                                    + " is Done!");
+                            results[task.getTask()] = true;
+                        }
+                    }
+                } catch (InterruptedException e) {
+                    // TODO Auto-generated catch block
+                    e.printStackTrace();
+                } catch (ExecutionException e) {
+                    // TODO Auto-generated catch block
+                    e.printStackTrace();
+                }
+            }
+        }
+        for (int i = 0; i < jobSize; i++) {
+            System.out.print("[" + i + ":" + results[i] + "]");
+        }
+        System.out.println("failed:" + failureCount + ", successCount:"
+                + successCount);
+        assertTrue(successCount + failureCount == jobSize);
+    }
+
+    @Test
+    public void completionExecutorTest() {
+        ExecutorCompletionService<MigrationTask> service = new ExecutorCompletionService<MigrationTask>(this.pool);
+        Timer timer = new Timer(true);
+        timer.schedule(new TimerTask(){
+            @Override
+            public void run() {
+                // TODO Auto-generated method stub
+                timeUp = true;
+            }
+        }, 300 * 1000);
+        Set<Future<?>> taskSet = new HashSet<Future<?>>();
+        for(int i = 0 ; i < jobSize; i++) {
+            QueryOAMClientProfileTask task = new QueryOAMClientProfileTask(i);
+            try{
+//                finishedTasks.add(service.submit(task));
+                taskSet.add(service.submit(task));
+            } catch(Exception e) {
+                e.printStackTrace();
+                tasks.add(task);
+            }
+        }
+        while(!timeUp && (!tasks.isEmpty() || !taskSet.isEmpty())) {
+            // wait till we get the first one
+            try {
+                Future<?> future = service.take();
+                if(taskSet.contains(future)) {
+                    taskSet.remove(future);
+                }
+                Object result = future.get();
+                if(result instanceof QueryOAMClientProfileTask) {
+                    tasks.add((QueryOAMClientProfileTask)result);
+                } if(result instanceof ClientProfileConversionTask) {
+                    tasks.add((ClientProfileConversionTask)result);
+                } else if(result instanceof ClientProfileIDCSRegistrationTask) {
+                    tasks.add((ClientProfileIDCSRegistrationTask)result);
+                } else if(result instanceof ClientMigrationCompletionTask) {
+                    ClientMigrationCompletionTask task = (ClientMigrationCompletionTask)result;
+                    if(task.isFailed()) {
+                        this.failureCount++;
+                        System.out.println("task: " + task.getTask() + " is failed!");
+                    } else {
+                        this.successCount++;
+                        System.out.println("task: " + task.getTask() + " is Done!");
+                        results[task.getTask()] = true;
+                    }
+                }
+            } catch (InterruptedException e) {
+                // TODO Auto-generated catch block
+                e.printStackTrace();
+            } catch (ExecutionException e) {
+                // TODO Auto-generated catch block
+                e.printStackTrace();
+            }
+            
+            try{ // keeping add new tasks to the blocking queue
+                if(!tasks.isEmpty()) {
+//                    finishedTasks.add(service.submit(tasks.peekFirst()));
+                    taskSet.add(service.submit(tasks.peekFirst()));
+                    tasks.pollFirst();
+                }
+            } catch(Exception e) {
+                e.printStackTrace();
+            }
+        }
+        for(int i = 0; i < jobSize; i++) {
+            System.out.print("[" + i + ":" + results[i]+"]");
+        }
+        assertTrue(successCount + failureCount == jobSize);
+    }
+
+    @Test
+    public void completableFutureTest() {
+        CompletableFuture<String> future;
+        String a = "Start";
+        future = CompletableFuture
+                .supplyAsync(new MySupplier("abc"), this.pool)
+                .thenApplyAsync((x) -> {
+                    try {
+                        Thread.sleep(1000);
+                    } catch (Exception e) {
+                        // TODO Auto-generated catch block
+                        e.printStackTrace();
+                    }
+                    System.out.println(x);
+                    return x + " stage_1";
+                }, this.pool).thenApplyAsync((y) -> {
+                    try {
+                        Thread.sleep(2000);
+                    } catch (Exception e) {
+                        // TODO Auto-generated catch block
+                        e.printStackTrace();
+                    }
+                    System.out.println(y);
+                    return y + " stage_2";
+                }, this.pool);
+        try {
+            String s = (String) future.get();
+            System.out.println(s);
+            s = (String) future.get();
+        } catch (InterruptedException e) {
+            // TODO Auto-generated catch block
+            e.printStackTrace();
+        } catch (ExecutionException e) {
+            // TODO Auto-generated catch block
+            e.printStackTrace();
+        }
+    }
+}
+
+class MySupplier implements Supplier<String> {
+    String value;
+    Random r;
+
+    public MySupplier(String value) {
+        this.value = value;
+        r = new Random();
+    }
+
+    @Override
+    public String get() {
+        // TODO Auto-generated method stub
+        return this.value + "_" + r.nextInt(5);
+    }
+}
